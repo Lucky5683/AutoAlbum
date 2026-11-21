@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AutoAlbum</string>
+    <string name="accessibility_description">Allows AutoAlbum to navigate supported video viewer screens when you explicitly start automation.</string>
+</resources>
