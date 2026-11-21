@@ -1,20 +1,25 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Unavoidable permissions required for AutoAlbum video automation -->
-    <!-- Floating overlay controller -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Foreground service to keep floating controller active over gallery apps -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Required video-read permissions only -->
+    <!-- Android 13+ (API 33+) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- Android 10-12 (API 29-32) -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
-    <!-- Ongoing notification for foreground service on Android 13+ -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Remove any unused network state permission merged from libraries -->
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
 
-    <!-- Incoming call detection to pause automation -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- ZERO INTERNET PERMISSION -->
 
     <application
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="AutoAlbum"
         android:supportsRtl="true"
         android:theme="@style/Theme.AutoAlbum">
@@ -27,26 +32,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <service
-            android:name=".automation.AutoAlbumAccessibilityService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/autoalbum_accessibility_service" />
-        </service>
-
-        <service
-            android:name=".overlay.FloatingControlService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-initiated floating controls for video playback automation" />
-        </service>
     </application>
 </manifest>

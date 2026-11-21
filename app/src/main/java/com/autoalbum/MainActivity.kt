@@ -1,107 +1,134 @@
 package com.autoalbum
 
-import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.autoalbum.automation.AutoAlbumAccessibilityService
-import com.autoalbum.automation.AutomationCoordinator
-import com.autoalbum.overlay.FloatingControlService
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.*
+import androidx.core.content.ContextCompat
+import com.autoalbum.media.MediaManager
+import com.autoalbum.media.VideoAlbum
 import com.autoalbum.ui.HomeScreen
 import com.autoalbum.ui.theme.AutoAlbumTheme
+import kotlinx.coroutines.launch
 
 /**
- * Minimal main activity for AutoAlbum.
+ * AutoAlbum Main Activity.
  *
- * Workflow:
- * 1. User taps START.
- * 2. Activity verifies overlay permission (SYSTEM_ALERT_WINDOW) and Accessibility service.
- * 3. Launches FloatingControlService, initiates automation, and minimizes to background.
- * 4. User opens their gallery app to start sequential playback.
+ * Implements a native, local gallery-like album browser using Android MediaStore.
+ *
+ * Guarantees:
+ * 1. Uses MediaStore to query existing local videos grouped into bucket albums.
+ * 2. Displays existing albums directly inside AutoAlbum.
+ * 3. Shows album thumbnail, album name, and video count.
+ * 4. Tapping an album opens and displays the videos inside that album.
+ * 5. Tapping a video opens the original URI via ACTION_VIEW in the system player.
+ * 6. ZERO video copying into AutoAlbum.
+ * 7. ZERO new folder creation on disk.
+ * 8. ZERO modification, deletion, or renaming of user videos or albums.
+ * 9. Uses only the required video-read permission (READ_MEDIA_VIDEO on Android 13+).
+ * 10. ZERO INTERNET permission.
+ * 11. ZERO floating icons or Accessibility automation.
  */
 class MainActivity : ComponentActivity() {
+
+    private lateinit var mediaManager: MediaManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        mediaManager = MediaManager(applicationContext)
+
         setContent {
             AutoAlbumTheme {
-                HomeScreen(
-                    onLaunchController = { handleLaunchFloatingController() }
-                )
-            }
-        }
-    }
+                val coroutineScope = rememberCoroutineScope()
+                var albums by remember { mutableStateOf<List<VideoAlbum>>(emptyList()) }
+                var selectedAlbum by remember { mutableStateOf<VideoAlbum?>(null) }
+                var selectedVideoIndex by remember { mutableStateOf<Int?>(null) }
+                var isLoading by remember { mutableStateOf(false) }
 
-    private fun handleLaunchFloatingController() {
-        // Step 1: Ensure Overlay permission
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Please enable 'Display over other apps' to show the floating controller", Toast.LENGTH_LONG).show()
-            val overlayIntent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            startActivity(overlayIntent)
-            return
-        }
+                val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    Manifest.permission.READ_MEDIA_VIDEO
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                }
 
-        // Step 2: Ensure Accessibility Service is enabled
-        if (!isAccessibilityServiceEnabled()) {
-            Toast.makeText(this, "Please enable 'AutoAlbum' in Accessibility settings for gallery automation", Toast.LENGTH_LONG).show()
-            val accessibilityIntent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(accessibilityIntent)
-            return
-        }
+                var hasPermission by remember {
+                    mutableStateOf(
+                        ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            requiredPermission
+                        ) == PackageManager.PERMISSION_GRANTED
+                    )
+                }
 
-        // Step 3: Launch Floating Controller Service (Singleton)
-        // Requirement E: LAUNCH starts the floating controller and minimizes app WITHOUT activating automation
-        FloatingControlService.start(this)
-
-        // Step 4: Minimize main application
-        moveTaskToBack(true)
-    }
-
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        // 1. Authoritative check via Settings.Secure
-        try {
-            val enabledServices = Settings.Secure.getString(
-                contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            )
-            if (!enabledServices.isNullOrEmpty()) {
-                val expectedFull = "$packageName/${AutoAlbumAccessibilityService::class.java.name}"
-                val expectedShort = "$packageName/.automation.AutoAlbumAccessibilityService"
-                val colonSplitter = android.text.TextUtils.SimpleStringSplitter(':')
-                colonSplitter.setString(enabledServices)
-                while (colonSplitter.hasNext()) {
-                    val componentName = colonSplitter.next()
-                    if (componentName.equals(expectedFull, ignoreCase = true) ||
-                        componentName.equals(expectedShort, ignoreCase = true)
-                    ) {
-                        return true
+                fun loadAlbums() {
+                    coroutineScope.launch {
+                        isLoading = true
+                        try {
+                            val loaded = mediaManager.getLocalVideoAlbums()
+                            albums = loaded
+                        } catch (e: Exception) {
+                            Toast.makeText(this@MainActivity, "Failed to load albums: ${e.message}", Toast.LENGTH_SHORT).show()
+                        } finally {
+                            isLoading = false
+                        }
                     }
                 }
-            }
-        } catch (e: Exception) {
-            // Fallback to AccessibilityManager
-        }
 
-        // 2. Fallback check via AccessibilityManager enabled list
-        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
-        val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        val expectedServiceName = AutoAlbumAccessibilityService::class.java.name
-        return enabledServices.any {
-            it.resolveInfo?.serviceInfo?.packageName == packageName &&
-            it.resolveInfo?.serviceInfo?.name == expectedServiceName
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { isGranted ->
+                    hasPermission = isGranted
+                    if (isGranted) {
+                        loadAlbums()
+                    } else {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Video permission is required to view albums",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+
+                LaunchedEffect(hasPermission) {
+                    if (hasPermission) {
+                        loadAlbums()
+                    }
+                }
+
+                HomeScreen(
+                    albums = albums,
+                    selectedAlbum = selectedAlbum,
+                    selectedVideoIndex = selectedVideoIndex,
+                    isLoading = isLoading,
+                    hasPermission = hasPermission,
+                    onRequestPermission = {
+                        permissionLauncher.launch(requiredPermission)
+                    },
+                    onAlbumClick = { album ->
+                        selectedAlbum = album
+                        selectedVideoIndex = null
+                    },
+                    onBackToAlbums = {
+                        selectedAlbum = null
+                        selectedVideoIndex = null
+                    },
+                    onVideoClick = { index ->
+                        selectedVideoIndex = index
+                    },
+                    onBackFromPlayer = {
+                        selectedVideoIndex = null
+                    }
+                )
+            }
         }
     }
 }

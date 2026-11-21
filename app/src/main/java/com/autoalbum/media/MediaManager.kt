@@ -2,15 +2,29 @@ package com.autoalbum.media
 
 import android.content.ContentUris
 import android.content.Context
-import android.media.MediaMetadataRetriever
-import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import android.provider.OpenableColumns
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/**
+ * Android MediaStore Video Album Manager.
+ *
+ * Guarantees:
+ * - Queries existing local videos via Android MediaStore.
+ * - Groups videos into album collections by MediaStore bucket ID & display name.
+ * - Skips photographs completely (queries MediaStore.Video.Media exclusively).
+ * - ZERO file copies: never copies videos or writes to storage.
+ * - ZERO new folders created on disk.
+ * - ZERO file modifications or deletions.
+ * - Uses only the required video-read permission.
+ */
 class MediaManager(private val context: Context) {
+
+    companion object {
+        private const val TAG = "AutoAlbum_Media"
+    }
 
     /**
      * Lists local video collections grouped by their parent album/folder (bucketId).
@@ -21,16 +35,17 @@ class MediaManager(private val context: Context) {
         val grouped = videos.groupBy { it.bucketId }
 
         grouped.map { (bucketId, albumVideos) ->
-            val firstVideo = albumVideos.firstOrNull()
-            val albumName = firstVideo?.albumName?.takeIf { it.isNotBlank() } ?: "Internal Videos"
-            val totalDuration = albumVideos.sumOf { it.durationMs }
+            val sortedVideos = albumVideos.sortedByDescending { it.dateModifiedSec }
+            val firstVideo = sortedVideos.firstOrNull()
+            val albumName = firstVideo?.albumName?.takeIf { it.isNotBlank() } ?: "Videos"
+            val totalDuration = sortedVideos.sumOf { it.durationMs }
             VideoAlbum(
                 bucketId = bucketId,
                 name = albumName,
-                videoCount = albumVideos.size,
+                videoCount = sortedVideos.size,
                 totalDurationMs = totalDuration,
                 representativeUri = firstVideo?.uri,
-                videos = albumVideos
+                videos = sortedVideos
             )
         }.sortedByDescending { it.videoCount }
     }
@@ -60,7 +75,7 @@ class MediaManager(private val context: Context) {
         // Ensure non-video MIME types (photos, audio) are excluded
         val selection = "${MediaStore.Video.Media.MIME_TYPE} LIKE ?"
         val selectionArgs = arrayOf("video/%")
-        val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+        val sortOrder = "${MediaStore.Video.Media.DATE_MODIFIED} DESC"
 
         val result = mutableListOf<VideoItem>()
 
@@ -106,63 +121,10 @@ class MediaManager(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            // Gracefully catch security/cursor exceptions if permission is ungranted or revoked
+            Log.e(TAG, "Error querying MediaStore videos: ${e.message}", e)
         }
 
+        Log.d(TAG, "Queried ${result.size} videos from MediaStore.")
         result
-    }
-
-    /**
-     * Resolves metadata for user-selected videos from the zero-permission Android Photo Picker.
-     */
-    suspend fun resolvePickedVideoUris(uris: List<Uri>): List<VideoItem> = withContext(Dispatchers.IO) {
-        uris.mapIndexedNotNull { index, uri ->
-            try {
-                var displayName = "Selected Video ${index + 1}"
-                var size = 0L
-
-                context.contentResolver.query(
-                    uri,
-                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                    null,
-                    null,
-                    null
-                )?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (cursor.moveToFirst()) {
-                        if (nameIndex != -1) displayName = cursor.getString(nameIndex) ?: displayName
-                        if (sizeIndex != -1) size = cursor.getLong(sizeIndex)
-                    }
-                }
-
-                var duration = 0L
-                try {
-                    val retriever = MediaMetadataRetriever()
-                    retriever.setDataSource(context, uri)
-                    val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    duration = durStr?.toLongOrNull() ?: 0L
-                    retriever.release()
-                } catch (e: Exception) {
-                    // Ignore metadata retriever error if unsupported
-                }
-
-                val nowSec = System.currentTimeMillis() / 1000
-
-                VideoItem(
-                    id = uri.hashCode().toLong(),
-                    uri = uri,
-                    displayName = displayName,
-                    durationMs = duration,
-                    sizeBytes = size,
-                    dateAddedSec = nowSec,
-                    dateModifiedSec = nowSec,
-                    bucketId = "photo_picker",
-                    albumName = "Selected Videos"
-                )
-            } catch (e: Exception) {
-                null
-            }
-        }
     }
 }

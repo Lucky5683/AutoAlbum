@@ -11,5 +11,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "AutoAlbum"
 include(":app")
-include(":app")
  
